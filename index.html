@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Matrix Clock">
+<meta name="theme-color" content="#000000">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="manifest" href="manifest.webmanifest">
+<title>Matrix Clock</title>
+<style>
+  :root { --text: #e3ece3; --muted: #93a393; --line: rgba(255,255,255,.14); --panel: rgba(8,12,8,.55); --accent: #0a84ff; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; -webkit-user-select: none; user-select: none;
+               font: 15px/1.35 -apple-system, "SF Pro Text", "Helvetica Neue", Arial, sans-serif; color: var(--text); }
+  iframe { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; display: block; }
+  #tap { position: fixed; inset: 0; }
+  #panel { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+           padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+           box-sizing: border-box; background: none; }
+  #panel.hidden { display: none; }
+  .card { position: relative; width: 100%; max-width: 560px; max-height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch;
+          background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 18px 20px 20px; box-sizing: border-box;
+          -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
+  #close { position: absolute; top: 10px; right: 10px; width: 34px; height: 34px; border-radius: 17px; border: 0;
+           background: rgba(255,255,255,.12); color: var(--text); display: flex; align-items: center; justify-content: center; }
+  #close svg { width: 14px; height: 14px; }
+  h1 { font-size: 17px; font-weight: 600; margin: 2px 0 4px; }
+  .caption { color: var(--muted); font-size: 13px; margin: 0 40px 12px 0; }
+  .row { display: grid; grid-template-columns: 118px 1fr; gap: 12px; align-items: center; margin: 12px 0; }
+  .row > .label { color: var(--text); text-align: right; }
+  .row.top { align-items: start; }
+  .row.top > .label { padding-top: 14px; }
+  @media (max-width: 460px) { .row { grid-template-columns: 1fr; gap: 6px; } .row > .label { text-align: left; } .row.top > .label { padding-top: 0; } }
+  .seg { display: flex; background: rgba(255,255,255,.1); border-radius: 9px; padding: 2px; }
+  .seg button { flex: 1; border: 0; background: none; color: var(--text); font: inherit; padding: 7px 8px; border-radius: 7px; }
+  .seg button.on { background: #fff; color: #000; }
+  .tiles { display: flex; gap: 14px; }
+  .tile { display: flex; flex-direction: column; align-items: center; gap: 6px; border: 0; background: none; color: var(--muted); font: inherit; font-size: 13px; padding: 0; }
+  .tile canvas { width: 87px; height: 57px; border-radius: 9px; outline: 1px solid var(--line); outline-offset: 0; }
+  .tile.on canvas { outline: 3px solid var(--accent); outline-offset: 3px; }
+  .tile.on { color: var(--text); }
+  .checks { display: flex; gap: 22px; flex-wrap: wrap; }
+  label.check, label.radio { display: flex; align-items: center; gap: 8px; }
+  input[type=checkbox], input[type=radio] { width: 18px; height: 18px; accent-color: var(--accent); margin: 0; }
+  input[type=range] { width: 100%; accent-color: var(--accent); margin: 6px 0 0; }
+  .ends { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; gap: 8px; }
+  .ends .mid { font-style: normal; }
+  .ends i { font-style: italic; }
+  .ends .grid { display: inline-flex; align-items: center; gap: 5px; }
+  .ends .grid svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1; }
+  .radios { display: flex; flex-direction: column; gap: 8px; }
+  .note { color: var(--muted); font-size: 12px; font-style: italic; margin: -2px 0 0 26px; }
+  select { width: 100%; font: inherit; color: var(--text); background: rgba(255,255,255,.1); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; -webkit-appearance: none; appearance: none; }
+  @font-face { font-family: "Michroma"; src: url("fonts/Michroma.ttf"); }
+  @font-face { font-family: "Tektur"; src: url("fonts/Tektur.ttf"); font-weight: 400 900; }
+  @font-face { font-family: "Orbitron"; src: url("fonts/Orbitron.ttf"); font-weight: 400 900; }
+  @font-face { font-family: "DSEG7 Modern"; src: url("fonts/DSEG7Modern-Bold.ttf"); font-weight: 100 900; }
+  .fontPick { position: relative; }
+  .fontRow { width: 100%; display: flex; align-items: center; gap: 12px; border: 1px solid var(--line); border-radius: 8px;
+             background: rgba(255,255,255,.1); color: var(--text); font: inherit; padding: 6px 10px; text-align: left; }
+  .fontRow .sample { color: #fff; font-size: 18px; font-weight: 700; line-height: 1.25; width: 72px; white-space: nowrap; display: inline-block; transform-origin: left center; }
+  .fontRow .name { flex: 1; }
+  .fontRow .chev { width: 11px; height: 7px; color: var(--muted); }
+  .fontList { margin-top: 4px; display: flex; flex-direction: column; gap: 2px; background: rgba(0,0,0,.45); border: 1px solid var(--line); border-radius: 8px; padding: 3px; }
+  .fontList .fontRow { border: 0; background: none; }
+  .fontList .fontRow.on { background: rgba(255,255,255,.12); }
+  .fontList .fontRow.on .tick::after { content: "✓"; color: var(--accent); }
+  .fact { display: flex; align-items: center; gap: 8px; border: 0; background: none; color: var(--muted); font: inherit; padding: 4px 0; }
+  .fact svg { width: 22px; height: 16px; }
+  #factText { color: var(--text); font-size: 13px; line-height: 1.45; margin: 6px 0 0; }
+  .dim { opacity: .45; }
+  details.advanced { margin: 14px 0 4px; border-top: 1px solid var(--line); padding-top: 10px; }
+  details.advanced summary { cursor: pointer; color: var(--muted); list-style: none; display: flex; align-items: center; gap: 6px; }
+  details.advanced summary::-webkit-details-marker { display: none; }
+  details.advanced summary::before { content: ""; width: 7px; height: 7px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+                                     transform: rotate(-45deg); transition: transform .15s; margin-right: 2px; }
+  details.advanced[open] summary::before { transform: rotate(45deg); }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<iframe id="clock" title="Matrix clock"></iframe>
+<div id="tap" aria-label="Show options"></div>
+
+<div id="panel" class="hidden">
+  <div class="card" role="dialog" aria-label="Options">
+    <button id="close" aria-label="Close"><svg viewBox="0 0 14 14"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+    <h1>Matrix Clock</h1>
+    <p class="caption">Every minute, the falling code wipes the old time and writes in the new one.</p>
+
+    <div class="row"><div class="label">Style:</div>
+      <div class="seg" id="style"><button data-v="film">Analog CRT</button><button data-v="classic">Digital</button></div></div>
+
+    <div class="row top"><div class="label">Color mode:</div>
+      <div class="tiles" id="colors">
+        <button class="tile" data-v="green"><canvas></canvas><span>Green</span></button>
+        <button class="tile" data-v="red"><canvas></canvas><span>Red</span></button>
+      </div></div>
+
+    <div class="row"><div class="label">Settings:</div>
+      <div class="checks"><label class="check"><input type="checkbox" id="hideClock"> Hide the clock</label>
+                          <label class="check"><input type="checkbox" id="hour24"> 24-hour time</label></div></div>
+
+    <div class="row top"><div class="label" style="padding-top: 9px">Clock font:</div>
+      <div class="fontPick">
+        <button class="fontRow chosen" id="fontButton" aria-haspopup="listbox"><span class="sample"></span><span class="name"></span>
+          <svg class="chev" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <div class="fontList hidden" id="fontList" role="listbox">
+          <button class="fontRow" data-v="michroma"><span class="sample" style="font-family: Michroma; transform: scaleY(1.1)"></span><span class="name">Michroma</span><span class="tick"></span></button>
+          <button class="fontRow" data-v="dseg7m"><span class="sample" style="font-family: 'DSEG7 Modern'"></span><span class="name">Alarm Clock</span><span class="tick"></span></button>
+          <button class="fontRow" data-v="orbitron"><span class="sample" style="font-family: Orbitron"></span><span class="name">Orbitron</span><span class="tick"></span></button>
+          <button class="fontRow" data-v="tektur"><span class="sample" style="font-family: Tektur"></span><span class="name">Tektur</span><span class="tick"></span></button>
+        </div>
+      </div></div>
+
+    <details class="advanced"><summary>Advanced</summary>
+    <div class="row" id="sizeRow"><div class="label">Clock size:</div>
+      <div><input type="range" id="size" min="0.9" max="1.55" step="0.01">
+           <div class="ends"><span>Small</span><span class="mid hidden" id="noClock">There <i>is</i> no clock.</span><span>Large</span></div></div></div>
+
+    <div class="row"><div class="label" id="clarityTitle">Clock clarity:</div>
+      <div><input type="range" id="clarity" min="0" max="1" step="0.01">
+           <div class="ends"><span id="clarityLeft">Easy to read</span><span id="clarityRight">Hidden in the code</span></div></div></div>
+
+    <div class="row"><div class="label">Zoom:</div>
+      <div><input type="range" id="zoomOut" min="0" max="1" step="0.01">
+           <div class="ends"><span class="grid"><svg viewBox="0 0 14 14"><rect x="1.0" y="1.0" width="4.80" height="4.80" rx="0.6"/><rect x="7.0" y="1.0" width="4.80" height="4.80" rx="0.6"/><rect x="1.0" y="7.0" width="4.80" height="4.80" rx="0.6"/><rect x="7.0" y="7.0" width="4.80" height="4.80" rx="0.6"/></svg>Compact</span><span class="grid">Dense<svg viewBox="0 0 14 14"><rect x="1.0" y="1.0" width="2.80" height="2.80" rx="0.6"/><rect x="5.0" y="1.0" width="2.80" height="2.80" rx="0.6"/><rect x="9.0" y="1.0" width="2.80" height="2.80" rx="0.6"/><rect x="1.0" y="5.0" width="2.80" height="2.80" rx="0.6"/><rect x="5.0" y="5.0" width="2.80" height="2.80" rx="0.6"/><rect x="9.0" y="5.0" width="2.80" height="2.80" rx="0.6"/><rect x="1.0" y="9.0" width="2.80" height="2.80" rx="0.6"/><rect x="5.0" y="9.0" width="2.80" height="2.80" rx="0.6"/><rect x="9.0" y="9.0" width="2.80" height="2.80" rx="0.6"/></svg></span></div></div></div>
+
+    </details>
+
+    <div class="row top"><div class="label"></div>
+      <div><button class="fact" id="factButton">
+             <svg viewBox="0 0 22 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+               <path d="M3.5 13.5c-1.8 0-2.5-1.6-1.4-2.6 1-.9 2.6-.5 3.3-2 .9-2 3-3.6 6-3.6 2.4 0 4.3 1.2 5.1 3"/>
+               <path d="M16.5 8.3c1.6-.2 3.4.8 3.6 2.4.2 1.5-1 2.8-2.6 2.8H7.5"/>
+               <path d="M13.2 5.1c-.2-1.9.6-3.6 1.8-4 .8-.2 1 .8.6 1.9-.4 1-1.2 1.8-2.4 2.1"/>
+               <path d="M15.1 5.6c.6-1.5 1.9-2.6 3-2.5.7.1.6 1-.1 1.8-.7.8-1.8 1.2-2.9 1"/>
+               <circle cx="18" cy="9.8" r=".5" fill="currentColor" stroke="none"/>
+             </svg>
+             <span>Fun fact about the film's code</span></button>
+           <p id="factText" class="hidden"></p></div></div>
+  </div>
+</div>
+
+<script>
+const DEFAULTS = {
+  rainStyle: "film",
+  color: "green",
+  showClock: true,
+  hour24: false,
+  size: 1.42,
+  clarity: .9,
+  clockFont: "michroma",
+  energySaver: false,
+  dense: 1,
+  v: 3
+};
+
+let opts = {
+  ...DEFAULTS
+};
+
+let saved = {};
+
+try {
+  saved = JSON.parse(localStorage.getItem("matrixClockPhone") || "{}");
+} catch (e) {}
+
+Object.assign(opts, saved);
+
+if (![ "film", "classic" ].includes(opts.rainStyle)) opts.rainStyle = DEFAULTS.rainStyle;
+
+if (![ "green", "red" ].includes(opts.color)) opts.color = DEFAULTS.color;
+
+delete opts.zoomOut;
+
+if (Object.keys(saved).length && (saved.v || 1) < 3) {
+  opts.clarity = DEFAULTS.clarity;
+  opts.size = DEFAULTS.size;
+  opts.v = 3;
+}
+
+opts.energySaver = false;
+
+const $ = id => document.getElementById(id);
+
+const frame = $("clock");
+
+const cellPt = () => Math.round((14 - (14 - 14 / Math.SQRT2) * opts.dense) * 10) / 10;
+
+function save() {
+  try {
+    localStorage.setItem("matrixClockPhone", JSON.stringify(opts));
+  } catch (e) {}
+}
+
+function pageAddress() {
+  const q = new URLSearchParams({
+    rainStyle: opts.rainStyle,
+    color: opts.color,
+    showClock: opts.showClock ? "1" : "0",
+    hour24: opts.hour24 ? "1" : "0",
+    size: opts.size,
+    clarity: opts.clarity,
+    clockFont: opts.clockFont,
+    energySaver: opts.energySaver ? "1" : "0",
+    cellPt: cellPt(),
+    writeIn: "1"
+  });
+  return "clock.html?" + q.toString();
+}
+
+$("tap").addEventListener("click", () => {
+  $("panel").classList.remove("hidden");
+  keepAwake();
+});
+
+$("close").addEventListener("click", () => $("panel").classList.add("hidden"));
+
+$("panel").addEventListener("click", e => {
+  if (e.target === $("panel")) $("panel").classList.add("hidden");
+});
+
+function sync() {
+  document.querySelectorAll("#style button").forEach(b => b.classList.toggle("on", b.dataset.v === opts.rainStyle));
+  document.querySelectorAll("#colors .tile").forEach(b => b.classList.toggle("on", b.dataset.v === opts.color));
+  $("hideClock").checked = !opts.showClock;
+  $("hour24").checked = opts.hour24;
+  $("size").value = opts.size;
+  $("size").disabled = !opts.showClock;
+  $("sizeRow").classList.toggle("dim", !opts.showClock);
+  $("noClock").classList.toggle("hidden", opts.showClock);
+  $("clarity").value = 1 - opts.clarity;
+  $("clarityTitle").textContent = opts.showClock ? "Clock clarity:" : "Rain brightness:";
+  $("clarityLeft").textContent = opts.showClock ? "Easy to read" : "Dim";
+  $("clarityRight").textContent = opts.showClock ? "Hidden in the code" : "Full strength";
+  document.querySelectorAll("#fontList .fontRow").forEach(b => b.classList.toggle("on", b.dataset.v === opts.clockFont));
+  const chosen = document.querySelector(`#fontList .fontRow[data-v="${opts.clockFont}"]`) || document.querySelector("#fontList .fontRow");
+  const button = $("fontButton");
+  button.querySelector(".sample").setAttribute("style", chosen.querySelector(".sample").getAttribute("style"));
+  button.querySelector(".name").textContent = chosen.querySelector(".name").textContent;
+  showSampleTimes();
+  $("zoomOut").value = opts.dense;
+}
+
+function apply() {
+  sync();
+  save();
+  const w = frame.contentWindow;
+  if (w && typeof w.applyOptions === "function") {
+    w.applyOptions({
+      rainStyle: opts.rainStyle,
+      color: opts.color,
+      showClock: opts.showClock,
+      hour24: opts.hour24,
+      size: opts.size,
+      clarity: opts.clarity,
+      clockFont: opts.clockFont,
+      energySaver: opts.energySaver
+    });
+  }
+}
+
+document.querySelectorAll("#style button").forEach(b => b.addEventListener("click", () => {
+  opts.rainStyle = b.dataset.v;
+  apply();
+}));
+
+document.querySelectorAll("#colors .tile").forEach(b => b.addEventListener("click", () => {
+  opts.color = b.dataset.v;
+  apply();
+}));
+
+$("hideClock").addEventListener("change", e => {
+  opts.showClock = !e.target.checked;
+  apply();
+});
+
+$("hour24").addEventListener("change", e => {
+  opts.hour24 = e.target.checked;
+  apply();
+});
+
+$("size").addEventListener("input", e => {
+  opts.size = +e.target.value;
+  apply();
+});
+
+$("clarity").addEventListener("input", e => {
+  opts.clarity = +(1 - e.target.value).toFixed(2);
+  apply();
+});
+
+$("fontButton").addEventListener("click", () => $("fontList").classList.toggle("hidden"));
+
+document.querySelectorAll("#fontList .fontRow").forEach(b => b.addEventListener("click", () => {
+  opts.clockFont = b.dataset.v;
+  $("fontList").classList.add("hidden");
+  apply();
+}));
+
+function showSampleTimes() {
+  const now = new Date, m = String(now.getMinutes()).padStart(2, "0");
+  const h = opts.hour24 ? String(now.getHours()).padStart(2, "0") : String(now.getHours() % 12 || 12);
+  document.querySelectorAll(".fontPick .sample").forEach(el => {
+    el.textContent = `${h}:${m}`;
+  });
+}
+
+setInterval(showSampleTimes, 1e4);
+
+$("zoomOut").addEventListener("change", e => {
+  opts.dense = +e.target.value;
+  save();
+  const w = frame.contentWindow;
+  try {
+    w.applyOptions({
+      cellPt: cellPt()
+    });
+    w.eval("init(true);");
+  } catch (err) {}
+});
+
+$("factButton").addEventListener("click", async () => {
+  const box = $("factText");
+  if (box.classList.toggle("hidden")) return;
+  if (!box.textContent) {
+    try {
+      box.textContent = (await (await fetch("fun-facts.txt")).text()).trim().split(/\n\s*\n/)[0];
+    } catch (e) {
+      box.textContent = "Couldn't load the fun fact.";
+    }
+  }
+});
+
+function drawTile(canvas, rgb) {
+  const W = 58, H = 38, k = 3;
+  canvas.width = W * k;
+  canvas.height = H * k;
+  const c = canvas.getContext("2d");
+  c.scale(k, k);
+  c.fillStyle = "#000";
+  c.fillRect(0, 0, W, H);
+  const inner = {
+    x: 5,
+    y: 4,
+    w: W - 10,
+    h: H - 8
+  };
+  c.save();
+  c.beginPath();
+  c.rect(inner.x, inner.y, inner.w, inner.h);
+  c.clip();
+  const cell = {
+    w: 2.4,
+    h: 3
+  }, step = 3.8, columns = 8;
+  let seed = 12345, extra = 999;
+  const lcg = s => Math.imul(s, 1664525) + 1013904223 >>> 0;
+  const random = () => {
+    seed = lcg(seed);
+    return (seed >>> 8) / 16777216;
+  };
+  const extraRandom = () => {
+    extra = lcg(extra);
+    return (extra >>> 8) / 16777216;
+  };
+  const head = rgb.map(v => Math.round(v + (255 - v) * .45));
+  for (let col = 0; col < columns; col++) {
+    const x = inner.x + col * (inner.w - cell.w) / (columns - 1);
+    const headY = 1 + random() * inner.h * .62;
+    const base = 3 + Math.floor(random() * 5), length = base + (col === 0 || col === 5 ? 3 : 0);
+    for (let k2 = 0; k2 < length; k2++) {
+      const fade = 1 - k2 / length;
+      const alpha = k2 === 0 ? 1 : Math.max(.1, (.2 + .6 * fade) * (.5 + .5 * (k2 < base ? random() : extraRandom())));
+      const color = k2 === 0 ? head : rgb;
+      c.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
+      const yUp = inner.y + headY + k2 * step;
+      c.fillRect(x, H - yUp - cell.h, cell.w, cell.h);
+    }
+  }
+  c.restore();
+}
+
+drawTile(document.querySelector('.tile[data-v="green"] canvas'), [ 0, 250, 69 ]);
+
+drawTile(document.querySelector('.tile[data-v="red"] canvas'), [ 255, 41, 31 ]);
+
+let wakeLock = null;
+
+async function keepAwake() {
+  try {
+    if (!wakeLock && navigator.wakeLock) {
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => {
+        wakeLock = null;
+      });
+    }
+  } catch (e) {}
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") keepAwake();
+});
+
+keepAwake();
+
+sync();
+
+frame.src = pageAddress();
+</script>
+</body>
+</html>

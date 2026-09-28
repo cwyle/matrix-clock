@@ -1,0 +1,1433 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Matrix Clock</title>
+<style>
+  @font-face { font-family: "Matrix Code"; src: url("fonts/MatrixCode.ttf"); }
+  @font-face { font-family: "JetBrains Mono"; src: url("fonts/JetBrainsMono.ttf"); font-weight: 100 800; }
+  @font-face { font-family: "M PLUS 1 Code"; src: url("fonts/MPLUS1Code.ttf"); font-weight: 100 700; }
+  @font-face { font-family: "Modern Digits"; src: url("fonts/CourierPrime-Regular.ttf"); unicode-range: U+0030-0039; size-adjust: 125%; }
+  @font-face { font-family: "Tektur"; src: url("fonts/Tektur.ttf"); font-weight: 400 900; }
+  @font-face { font-family: "Michroma"; src: url("fonts/Michroma.ttf"); }
+  @font-face { font-family: "Orbitron"; src: url("fonts/Orbitron.ttf"); font-weight: 400 900; }
+  @font-face { font-family: "DSEG7 Modern"; src: url("fonts/DSEG7Modern-Bold.ttf"); font-weight: 100 900; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { opacity: 0; transition: opacity 1s ease-out; }
+  body.shown { opacity: 1; }
+  canvas { position: absolute; left: 0; top: 0; width: 100vw; height: 100vh; }
+  canvas { mix-blend-mode: plus-lighter; }
+  #grain { position: absolute; inset: -128px; pointer-events: none;
+           opacity: var(--grain, 0.06); will-change: transform; }
+</style>
+</head>
+<body>
+<canvas class="glow"></canvas>
+<canvas class="glow"></canvas>
+<canvas class="glow"></canvas>
+<canvas id="glass"></canvas>
+<canvas id="screen"></canvas>
+<canvas id="clock"></canvas>
+<div id="grain"></div>
+<script>
+const GREEN_RAIN = [ 133, 100, 59 ], GREEN_HEAD = [ 134, 100, 81 ];
+
+const FILM_GREEN_HEAD = [ 155, 100, 85 ];
+
+const RED_RAIN = [ 3, 100, 56 ], RED_HEAD = [ -8, 100, 74 ];
+
+function colorAt(from, to, t) {
+  const [h, sat, l] = from.map((v, k) => v + (to[k] - v) * t);
+  return `hsl(${h.toFixed(1)}, ${sat}%, ${l.toFixed(1)}%)`;
+}
+
+const urlParams = new URLSearchParams(location.search);
+
+const CONFIG = Object.assign({
+  color: "green",
+  showClock: true,
+  hour24: false
+}, window.MATRIX_CONFIG || {}, Object.fromEntries([ "color", "lat", "lon", "size", "customColor", "clarity", "clockFont", "rainStyle", "density" ].filter(k => urlParams.has(k)).map(k => [ k, urlParams.get(k) ])), Object.fromEntries([ "showClock", "hour24", "preview", "energySaver", "writeIn" ].filter(k => urlParams.has(k)).map(k => [ k, urlParams.get(k) === "1" ])));
+
+const SHIFT_MINUTES = 5;
+
+function sunTimes(date, lat, lon) {
+  const rad = Math.PI / 180, dayMs = 864e5, J1970 = 2440588, J2000 = 2451545, J0 = 9e-4;
+  const days = date.valueOf() / dayMs - .5 + J1970 - J2000;
+  const lw = -lon * rad, phi = lat * rad;
+  const n = Math.round(days - J0 - lw / (2 * Math.PI));
+  const ds = J0 + lw / (2 * Math.PI) + n;
+  const M = rad * (357.5291 + .98560028 * ds);
+  const C = rad * (1.9148 * Math.sin(M) + .02 * Math.sin(2 * M) + 3e-4 * Math.sin(3 * M));
+  const L = M + C + rad * 102.9372 + Math.PI;
+  const dec = Math.asin(Math.sin(rad * 23.4397) * Math.sin(L));
+  const noon = J2000 + ds + .0053 * Math.sin(M) - .0069 * Math.sin(2 * L);
+  const cosW = (Math.sin(-.833 * rad) - Math.sin(phi) * Math.sin(dec)) / (Math.cos(phi) * Math.cos(dec));
+  if (cosW < -1 || cosW > 1) return null;
+  const a = J0 + (Math.acos(cosW) + lw) / (2 * Math.PI) + n;
+  const set = J2000 + a + .0053 * Math.sin(M) - .0069 * Math.sin(2 * L);
+  const toDate = j => new Date((j + .5 - J1970) * dayMs);
+  return {
+    rise: toDate(noon - (set - noon)),
+    set: toDate(set)
+  };
+}
+
+function redness(now) {
+  if (CONFIG.color === "red") return 1;
+  if (CONFIG.color !== "auto" || CONFIG.lat == null || CONFIG.lon == null) return 0;
+  const sun = sunTimes(new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12), +CONFIG.lat, +CONFIG.lon);
+  if (!sun) return 0;
+  const span = SHIFT_MINUTES * 6e4;
+  const ramp = t => Math.min(1, Math.max(0, (t + span) / (2 * span)));
+  const eased = x => x * x * (3 - 2 * x);
+  return now < (sun.rise.valueOf() + sun.set.valueOf()) / 2 ? 1 - eased(ramp(now - sun.rise)) : eased(ramp(now - sun.set));
+}
+
+const RAIN_STYLES = {
+  film: {
+    font: `"Matrix Code", monospace`,
+    size: 1.2,
+    glyphScaleX: .7,
+    rowPitch: 1.2,
+    pool: [ ...'モエヤキオカ7ケサスz152ヨタワ4ネヌナ98ヒ0ホア3ウセ¦:"꞊ミラリ╌ツテニハソ▪ー<>|+*コシマムメ' ],
+    kanaShare: .45,
+    symbolShare: .2,
+    mirrorKana: false,
+    pairs: true,
+    crtLines: true,
+    burstEvery: 1 / 3,
+    burstShare: .2,
+    burstSwap: .45,
+    burstBoost: .4,
+    burstHold: .1,
+    burstSettle: .04,
+    splotch: .5,
+    fadePerSecond: .1,
+    tipFade: 22,
+    tipRatio: 3.2,
+    writeSpeed: [ 7, 11 ],
+    eraserSpeedup: [ 1.05, 1.35 ],
+    eraseAfter: [ 1.5, 3.5 ],
+    nextWriter: [ 1, 3.5 ],
+    streams: .8,
+    crt: {
+      bow: 0,
+      vignette: .27,
+      soft: 1,
+      fringe: .64,
+      fringeAlpha: .7,
+      glass: .115,
+      afterglow: .35,
+      phosphorTint: .2
+    },
+    spriteBox: [ 1.1, 1.25 ],
+    clearRain: .3,
+    grain: .065
+  },
+  classic: {
+    font: `"Modern Digits", "JetBrains Mono", "M PLUS 1 Code", monospace`,
+    size: 1.1,
+    pool: [ ..."アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン" + "0123456789" + "ZKXAEHMNRTY" ],
+    mirrorKana: true,
+    kanaShare: .5,
+    headTint: .5,
+    headAlpha: .4,
+    green: [ 139.5, 100, 50.5 ],
+    trailChars: [ 8, 40 ],
+    ghostFade: 0,
+    ghostStrength: .7,
+    fallSpeed: [ 4.5, 10 ],
+    density: 4,
+    smallDensity: 3.5,
+    smallClearRain: .25,
+    grain: 0,
+    clearRain: .4
+  }
+};
+
+const rainStyle = () => RAIN_STYLES[CONFIG.rainStyle] || RAIN_STYLES.film;
+
+const isKana = ch => ch >= "゠" && ch <= "ヿ";
+
+const CLOCK_FONTS = {
+  tektur: "Tektur",
+  michroma: "Michroma",
+  orbitron: "Orbitron",
+  dseg7m: "DSEG7 Modern"
+};
+
+const NO_THICKEN = new Set([ "dseg7m" ]);
+
+const clockFontName = () => CLOCK_FONTS[CONFIG.clockFont] || CLOCK_FONTS.michroma;
+
+const clockFontStack = () => `"${clockFontName()}", sans-serif`;
+
+const LAYOUT_DEFAULT = {
+  width: .72,
+  gap: .3
+};
+
+const LAYOUT_PREVIEW = {
+  width: .9,
+  gap: .15
+};
+
+const TIME_ALPHA = .85;
+
+const RAIN_ALPHA = .6;
+
+const CHANGE_SPEED = 1.25;
+
+const CLOCK_GLOW = .75;
+
+const DENSITY = 2.4;
+
+const STRIPE_DARKNESS = .6;
+
+const STRIPES_PER_CHAR = 10;
+
+const TRAIL_CHARS = 16;
+
+const GHOST_FADE = .35;
+
+const screen = document.getElementById("screen");
+
+const lctx = screen.getContext("2d");
+
+const GLOW_SCALE = 4;
+
+const GLOWS = [ [ 1, 1.25 ], [ .5, 1 ], [ .2, 1.15 ] ];
+
+const glowCanvases = [ ...document.querySelectorAll("canvas.glow") ];
+
+const glowCtx = glowCanvases.map(g => g.getContext("2d"));
+
+let offsetMinutes = 0;
+
+let S = {};
+
+const pick = list => list[Math.floor(Math.random() * list.length)];
+
+function charKinds(style) {
+  if (style._kinds && style._kinds.pool === style.pool) return style._kinds;
+  const all = [ ...new Set(style.pool) ];
+  const of = test => all.filter(test);
+  const kana = of(isKana), numbers = of(ch => /[0-9]/.test(ch));
+  let letters = of(ch => /[A-Za-z]/.test(ch));
+  const symbols = of(ch => !isKana(ch) && !/[0-9A-Za-z]/.test(ch));
+  if (letters.length < 3) {
+    symbols.push(...letters);
+    letters = [];
+  }
+  const kinds = {
+    pool: style.pool,
+    kana: kana,
+    symbols: symbols,
+    plain: [ numbers, letters ].filter(k => k.length)
+  };
+  Object.defineProperty(style, "_kinds", {
+    value: kinds,
+    writable: true,
+    configurable: true
+  });
+  return kinds;
+}
+
+const randChar = () => {
+  const style = rainStyle(), {kana: kana, symbols: symbols, plain: plain} = charKinds(style);
+  const kinds = [ kana, symbols, ...plain ].filter(k => k.length).length;
+  const kanaShare = kana.length ? style.kanaShare ?? 1 / kinds : 0;
+  const symbolShare = symbols.length ? style.symbolShare ?? (1 - kanaShare) / (kinds - (kana.length ? 1 : 0)) : 0;
+  const r = Math.random();
+  if (r < kanaShare || !(symbols.length || plain.length)) return pick(kana);
+  if (r < kanaShare + symbolShare || !plain.length) return pick(symbols);
+  return pick(pick(plain));
+};
+
+const FIXED_TIME = urlParams.get("at");
+
+const THUMB = urlParams.has("thumb");
+
+const cellPt = () => +CONFIG.cellPt || +urlParams.get("cellPt") || 0;
+
+const densityScale = () => lowPower ? 1 : 1 + (Math.SQRT2 - 1) * Math.min(1, Math.max(0, +CONFIG.density || 0));
+
+const columns = () => +urlParams.get("cols") || (cellPt() ? Math.round(innerWidth / cellPt()) : 0) || Math.round((CONFIG.preview || CONFIG.sheet ? 60 : 90) * (rainStyle().columns || 1) * densityScale());
+
+const LAYOUT = CONFIG.preview ? LAYOUT_PREVIEW : LAYOUT_DEFAULT;
+
+const SIZE_MIN = .9, SIZE_MAX = 1.55, SIZE_DEFAULT = 1.55;
+
+const FONT_PER_SIZE = .2856;
+
+const BASE_WIDTH = LAYOUT.width;
+
+const MAX_SPAN = .94;
+
+const maxSpan = () => {
+  const c = rainStyle().crt;
+  return c ? MAX_SPAN * (1 - c.bow / 2) : MAX_SPAN;
+};
+
+const GAP_SHARE = .4, NARROWING = .92;
+
+const CLOCK_FONT_WIDTH = {
+  orbitron: 1.12,
+  dseg7m: 1.087
+};
+
+const CLOCK_FONT_HEIGHT = {
+  michroma: 1.1
+};
+
+function fontTarget(w, size = +CONFIG.size || SIZE_DEFAULT) {
+  return w * FONT_PER_SIZE * (BASE_WIDTH / LAYOUT_DEFAULT.width) * size;
+}
+
+function timeParts() {
+  if (FIXED_TIME) {
+    const [h, m] = FIXED_TIME.split(":");
+    return [ CONFIG.hour24 ? h.padStart(2, "0") : String(+h), m.padStart(2, "0") ];
+  }
+  const d = new Date(Date.now() + offsetMinutes * 6e4);
+  const hours = CONFIG.hour24 ? d.getHours() : d.getHours() % 12 || 12;
+  return [ CONFIG.hour24 ? String(hours).padStart(2, "0") : String(hours), String(d.getMinutes()).padStart(2, "0") ];
+}
+
+function cellMask(hh, mm) {
+  const {w: w, h: h, cols: cols, rows: rows, cs: cs, rh: rh} = S;
+  if (!CONFIG.showClock) return new Uint8Array(cols * rows);
+  const W = Math.round(w), H = Math.round(h);
+  const o = document.createElement("canvas");
+  o.width = W;
+  o.height = H;
+  const c = o.getContext("2d");
+  c.fillStyle = "#000";
+  c.fillRect(0, 0, W, H);
+  c.fillStyle = "#fff";
+  c.textAlign = "center";
+  c.textBaseline = "alphabetic";
+  const glyphs = (hh + ":" + mm).split("");
+  const SIZING = "00:00".split("");
+  const baseAscent = 74;
+  c.font = `700 100px ${clockFontStack()}`;
+  const heightMatch = baseAscent / (c.measureText("0").actualBoundingBoxAscent || baseAscent);
+  let f = Math.round(Math.min(h * .9, fontTarget(w) * heightMatch));
+  const setFont = (scale = 1) => c.font = `700 ${Math.round(f * scale)}px ${clockFontStack()}`;
+  const sx = NARROWING * (CLOCK_FONT_WIDTH[CONFIG.clockFont] || 1);
+  const sy = CLOCK_FONT_HEIGHT[CONFIG.clockFont] || 1;
+  const colonDot = () => {
+    const digitRows = c.measureText("0").actualBoundingBoxAscent * sy / rh;
+    const n = Math.min(4, Math.max(2, Math.round(digitRows / 6)));
+    return {
+      n: n,
+      apart: Math.max(n + 1, Math.round(digitRows * .34))
+    };
+  };
+  const ink = ch => {
+    if (ch === ":") {
+      const half = colonDot().n * cs / 2 / sx;
+      return [ half, half ];
+    }
+    const m = c.measureText(ch);
+    return [ m.actualBoundingBoxLeft, m.actualBoundingBoxRight ];
+  };
+  const layout = (symbols = glyphs) => {
+    const gap = c.measureText("0").width * LAYOUT.gap * GAP_SHARE;
+    const xs = [];
+    let edge = 0;
+    for (const ch of symbols) {
+      const [l, r] = ink(ch);
+      xs.push(edge + l);
+      edge = xs[xs.length - 1] + r + gap;
+    }
+    const span = edge - gap;
+    return {
+      xs: xs.map(x => x + (W - span) / 2),
+      span: span
+    };
+  };
+  const fAtMax = Math.min(h * .9, fontTarget(w, SIZE_MAX) * heightMatch);
+  f = Math.round(fAtMax);
+  setFont();
+  const spanAtMax = layout(SIZING).span * sx;
+  if (spanAtMax > w * maxSpan()) f = Math.round(Math.min(h * .9, fontTarget(w) * heightMatch) * (w * maxSpan() / spanAtMax)); else f = Math.round(Math.min(h * .9, fontTarget(w) * heightMatch));
+  setFont();
+  while (layout(SIZING).span * sx > w * maxSpan() && f > 10) {
+    f -= 2;
+    setFont();
+  }
+  const L = layout();
+  c.lineJoin = "round";
+  const digitAscent = c.measureText("0").actualBoundingBoxAscent;
+  const baseY = H / 2 + digitAscent / 2;
+  const dot = colonDot();
+  c.setTransform(sx, 0, 0, sy, W / 2 * (1 - sx), H / 2 * (1 - sy));
+  setFont();
+  glyphs.forEach((ch, k) => {
+    if (ch === ":") return;
+    c.lineWidth = f * .04;
+    c.fillStyle = c.strokeStyle = "#f00";
+    c.fillText(ch, L.xs[k], baseY);
+    if (!NO_THICKEN.has(CONFIG.clockFont)) c.strokeText(ch, L.xs[k], baseY);
+  });
+  const data = c.getImageData(0, 0, W, H).data;
+  const mask = new Uint8Array(cols * rows);
+  const ox = (w - cols * cs) / 2, oy = (h - rows * rh) / 2;
+  for (let r = 0; r < rows; r++) for (let x = 0; x < cols; x++) {
+    const px = Math.round(ox + x * cs + cs / 2), py = Math.round(oy + r * rh + rh / 2);
+    if (px < 0 || py < 0 || px >= W || py >= H) continue;
+    const at = (py * W + px) * 4;
+    mask[r * cols + x] = data[at] > 128 ? 1 : 0;
+  }
+  const colonX = W / 2 + (L.xs[glyphs.indexOf(":")] - W / 2) * sx;
+  const midRow = (H / 2 - oy) / rh - .5, midCol = (colonX - ox) / cs - .5;
+  const top = Math.round(midRow - dot.apart / 2 - (dot.n - 1) / 2);
+  const left = Math.round(midCol - (dot.n - 1) / 2);
+  for (const r0 of [ top, top + dot.apart ]) for (let r = r0; r < r0 + dot.n; r++) for (let x = left; x < left + dot.n; x++) {
+    if (r >= 0 && r < rows && x >= 0 && x < cols) mask[r * cols + x] = 2;
+  }
+  return centreMask(mask);
+}
+
+function centreMask(mask) {
+  const {cols: cols, rows: rows} = S;
+  let x0 = cols, x1 = -1;
+  for (let i = 0; i < mask.length; i++) if (mask[i]) {
+    const x = i % cols;
+    if (x < x0) x0 = x;
+    if (x > x1) x1 = x;
+  }
+  const shift = x1 >= 0 ? Math.trunc((cols - 1 - x1 - x0) / 2) : 0;
+  if (!shift) return mask;
+  const moved = new Uint8Array(cols * rows);
+  for (let i = 0; i < mask.length; i++) if (mask[i]) {
+    const x = i % cols + shift;
+    if (x >= 0 && x < cols) moved[i - i % cols + x] = mask[i];
+  }
+  return moved;
+}
+
+function setRed(red) {
+  const shade = Math.round(red * 200) / 200;
+  if (shade !== S.red) {
+    S.red = shade;
+    if (S.sprites) buildSprites();
+  }
+}
+
+function newStream(rows) {
+  const y = -Math.random() * rows;
+  return {
+    col: 0,
+    y: y,
+    at: Math.floor(y),
+    v: streamSpeed(),
+    trail: streamTrail()
+  };
+}
+
+const smallPreview = () => !!(CONFIG.preview || CONFIG.sheet);
+
+const streamDensity = () => smallPreview() && rainStyle().smallDensity || rainStyle().density || DENSITY;
+
+const clearRainShare = () => {
+  const st = rainStyle();
+  return smallPreview() && st.smallClearRain != null ? st.smallClearRain : st.clearRain ?? .5;
+};
+
+const streamSpeed = () => between(rainStyle().fallSpeed || [ 6, 16 ]);
+
+function init(settled = false) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = window.innerWidth, h = window.innerHeight;
+  screen.width = Math.round(w * dpr);
+  screen.height = Math.round(h * dpr);
+  S = {
+    w: w,
+    h: h,
+    dpr: dpr
+  };
+  const COLUMNS = columns();
+  S.cs = w >= 1080 ? Math.round(w / COLUMNS) : Math.max(3, w / COLUMNS);
+  const wanted = S.cs / STRIPES_PER_CHAR, period = Math.max(2 / dpr, wanted);
+  const strength = Math.min(1, wanted / period);
+  S.stripes = strength < .5 || !rainStyle().crtLines ? null : {
+    period: period * dpr,
+    cut: STRIPE_DARKNESS * strength
+  };
+  glowCanvases.forEach((g, k) => {
+    const glowScale = screen.width < 1600 ? 1 : GLOW_SCALE;
+    g.width = Math.ceil(screen.width / glowScale);
+    g.height = Math.ceil(screen.height / glowScale);
+    const [radius, strength] = GLOWS[k];
+    g.style.width = `${w / glowScale}px`;
+    g.style.height = `${h / glowScale}px`;
+    g.style.transformOrigin = "0 0";
+    g.style.transform = `scale(${glowScale})`;
+    g.style.filter = `blur(${(S.cs * radius / glowScale).toFixed(2)}px) brightness(${strength})`;
+  });
+  S.rh = Math.round(S.cs * (rainStyle().rowPitch || 1.25));
+  S.cols = Math.floor(w / S.cs);
+  S.rows = Math.floor(h / S.rh);
+  const n = S.cols * S.rows;
+  S.ch = Array.from({
+    length: n
+  }, randChar);
+  S.ghost = new Array(n).fill("");
+  S.ghostA = new Float32Array(n);
+  S.bright = new Float32Array(n);
+  S.fade = new Float32Array(n);
+  S.splotch = new Float32Array(n).fill(1);
+  S.tip = new Float32Array(n);
+  S.pulse = new Float32Array(n);
+  S.pulseHold = new Float32Array(n);
+  S.burstT = 0;
+  S.bugBright = new Float32Array(n);
+  S.bug = {
+    col: 0,
+    row: -1,
+    speed: 10,
+    wait: 1.5,
+    head: -1
+  };
+  S.red = null;
+  S.slots = [ null, null ];
+  S.slot = 0;
+  S.gen = new Uint8Array(n);
+  crtGeometry();
+  grain.style.opacity = rainStyle().grain ?? .06;
+  showGlow();
+  S.wave = null;
+  S.hourWave = null;
+  S.clockFade = 1;
+  S.clockFadeTo = 1;
+  S.band = null;
+  S.sprites = null;
+  setRed(redness(new Date));
+  S.filmCols = rainStyle().pairs ? Array.from({
+    length: S.cols
+  }, () => ({
+    strings: [],
+    next: Math.random() * (init.warmup ? 2 : 16)
+  })) : null;
+  const colWait = Array.from({
+    length: S.cols
+  }, () => Math.random() * START_SPREAD);
+  S.streams = rainStyle().pairs ? [] : Array.from({
+    length: Math.round(S.cols * streamDensity())
+  }, (_, i) => {
+    const s = newStream(S.rows);
+    s.col = i % S.cols;
+    s.y -= colWait[s.col] * s.v;
+    s.at = Math.floor(s.y);
+    return s;
+  });
+  const [hh, mm] = timeParts();
+  S.time = hh + ":" + mm;
+  S.lit = new Uint8Array(n);
+  buildSprites();
+  beginChange(hh, mm);
+  if (rainStyle().pairs && !THUMB) {
+    for (let k = 0; k < 24 * (init.warmup || 45); k++) step(1 / 24);
+    S.lit.fill(0);
+    S.tip.fill(0);
+    S.pulse.fill(0);
+    if (!settled) {
+      S.bright.fill(0);
+      S.ghostA.fill(0);
+      for (const col of S.filmCols) Object.assign(col, {
+        strings: [],
+        next: Math.random() * START_SPREAD
+      });
+      S.fromTop = START_SPREAD + 2;
+    }
+    beginChange(hh, mm);
+  } else if (settled && !THUMB) {
+    for (const s of S.streams) {
+      s.y = -Math.random() * S.rows * .6;
+      s.at = Math.floor(s.y);
+    }
+    for (let k = 0; k < 24 * 5; k++) step(1 / 24);
+    S.lit.fill(0);
+    beginChange(hh, mm);
+  }
+}
+
+function setChar(i, ch) {
+  if (S.ch[i] !== ch) {
+    S.ghost[i] = S.ch[i];
+    S.ghostA[i] = S.crt && S.bright[i] <= .05 ? 0 : 1;
+    S.ch[i] = ch;
+  }
+}
+
+function beginChange(hh, mm) {
+  const {cols: cols, rows: rows} = S;
+  S.target = cellMask(hh, mm);
+  S.changers = [];
+  if (!THUMB) return;
+  for (let x = 0; x < cols; x++) {
+    let touched = false;
+    for (let r = 0; r < rows && !touched; r++) touched = S.lit[r * cols + x] !== S.target[r * cols + x];
+    if (touched) {
+      const y = -1 - Math.random() * 3;
+      S.changers.push({
+        x: x,
+        y: y,
+        at: Math.floor(y),
+        v: (8 + Math.random() * 4) * CHANGE_SPEED,
+        delay: Math.random() * 5 / CHANGE_SPEED
+      });
+    }
+  }
+}
+
+const FADE_K = Math.log(RAIN_ALPHA / .05);
+
+function rollSplotch(i) {
+  const amount = rainStyle().splotch || 0;
+  S.splotch[i] = 1 - amount * Math.random();
+}
+
+function light(i, speed, trail = TRAIL_CHARS) {
+  const style = rainStyle();
+  S.bright[i] = 1;
+  if (style.tipFade) S.tip[i] = 1;
+  S.gen[i] = slotFor(i);
+  const slow = style.fadePerSecond;
+  S.fade[i] = slow ? slow : FADE_K * speed / trail;
+  rollSplotch(i);
+}
+
+function streamTrail() {
+  const t = rainStyle().trailChars;
+  return t ? t[0] + (t[1] - t[0]) * Math.random() ** 2 : TRAIL_CHARS;
+}
+
+const between = ([a, b]) => a + Math.random() * (b - a);
+
+const START_SPREAD = 4;
+
+function stepFilmColumns(dt, style) {
+  const {cols: cols, rows: rows} = S;
+  if (S.fromTop > 0) S.fromTop -= dt;
+  const run = (m, c, erase) => {
+    m.y += m.v * dt;
+    const cur = Math.floor(m.y);
+    if (m.next == null) m.next = m.at;
+    for (let r = Math.max(0, m.next); r <= Math.min(rows - 1, cur); r++) {
+      const i = r * cols + c;
+      if (erase) {
+        if (S.crt && S.crt.afterglow) S.fade[i] = 3 / S.crt.afterglow; else S.bright[i] = 0;
+      } else {
+        setChar(i, randChar());
+        light(i, m.v);
+        S.lit[i] = S.target[i];
+      }
+    }
+    m.next = Math.max(m.next, cur + 1);
+    m.at = cur;
+    return m.y < rows + 1;
+  };
+  for (let c = 0; c < cols; c++) {
+    const col = S.filmCols[c];
+    col.next -= dt;
+    if (col.next <= 0) {
+      let start = -1 - Math.random() * 3;
+      if (!(S.fromTop > 0) && Math.random() < .3) {
+        const r0 = Math.floor(Math.random() * rows * .5);
+        let dark = true;
+        for (let r = r0; r < rows && dark; r++) dark = S.bright[r * cols + c] <= .05 && !(r === r0 && (S.target[r * cols + c] || S.lit[r * cols + c]));
+        if (dark) start = r0;
+      }
+      const ahead = col.strings[col.strings.length - 1];
+      let v = between(style.writeSpeed);
+      if (ahead && ahead.eraser) v = Math.min(v, ahead.eraser.v);
+      col.strings.push({
+        writer: {
+          y: start,
+          at: Math.floor(start),
+          v: v,
+          start: start
+        },
+        start: start,
+        eraser: null,
+        eraseIn: between(style.eraseAfter),
+        stopAt: rows
+      });
+      col.next = Infinity;
+    }
+    for (const st of col.strings) {
+      if (st.writer) {
+        if (st.writer.at >= 0 && st.writer.at < rows) S.heads.add(st.writer.at * cols + c);
+        if (!run(st.writer, c, false)) st.writer = null;
+      }
+      if (st.eraseIn != null && (st.eraseIn -= dt) <= 0) {
+        const w = st.writer;
+        st.eraser = {
+          y: st.start,
+          at: Math.floor(st.start),
+          v: (w ? w.v : between(style.writeSpeed)) * between(style.eraserSpeedup)
+        };
+        st.eraseIn = null;
+        if (st === col.strings[col.strings.length - 1]) col.next = between(style.nextWriter) / (style.streams || 1);
+      }
+      if (st.eraser) {
+        if (st.writer && st.eraser.y >= st.writer.y - 1) {
+          st.stopAt = st.writer.at;
+          st.writer = null;
+        }
+        if (!run(st.eraser, c, true) || !st.writer && st.eraser.at >= st.stopAt) st.eraser = null;
+      }
+    }
+    col.strings = col.strings.filter(st => st.writer || st.eraser || st.eraseIn != null);
+  }
+}
+
+const BUG_MAX_TURNS = 5, BUG_MAX_SIDEWAYS = 5;
+
+const BUG_TRAIL_CHARS = 24;
+
+function stepBug(dt) {
+  const {cols: cols, rows: rows} = S, bug = S.bug;
+  const fade = Math.exp(-FADE_K * bug.speed / BUG_TRAIL_CHARS * dt);
+  for (let i = 0; i < S.bugBright.length; i++) S.bugBright[i] *= fade;
+  if (bug.wait > 0) {
+    bug.wait -= dt;
+    if (bug.wait <= 0) {
+      const turns = new Map;
+      const count = 1 + Math.floor(Math.random() * BUG_MAX_TURNS);
+      while (turns.size < Math.min(count, rows - 4)) {
+        const distance = 1 + Math.floor(Math.random() * BUG_MAX_SIDEWAYS);
+        turns.set(2 + Math.floor(Math.random() * (rows - 4)), Math.random() < .5 ? -distance : distance);
+      }
+      Object.assign(bug, {
+        col: Math.floor(Math.random() * cols),
+        row: rows,
+        sideways: 0,
+        progress: 0,
+        speed: 6 + Math.random() * 10,
+        turns: turns
+      });
+    }
+    bug.head = -1;
+    return;
+  }
+  bug.progress += bug.speed * dt;
+  while (bug.progress >= 1 && bug.row >= 0) {
+    bug.progress -= 1;
+    if (bug.sideways !== 0) {
+      const step = Math.sign(bug.sideways);
+      bug.col += step;
+      bug.sideways -= step;
+    } else {
+      bug.row -= 1;
+      const turn = bug.turns.get(bug.row);
+      if (turn) {
+        bug.sideways = bug.col + turn >= 0 && bug.col + turn < cols ? turn : Math.max(-bug.col, Math.min(cols - 1 - bug.col, -turn));
+      }
+    }
+    if (bug.row >= 0) {
+      const i = bug.row * cols + bug.col;
+      S.bugBright[i] = 1;
+      S.gen[i] = slotFor(i);
+      S.bright[i] = 0;
+      setChar(i, randChar());
+    }
+  }
+  bug.head = bug.row >= 0 ? bug.row * cols + bug.col : -1;
+  if (bug.row < 0) bug.wait = 1 + Math.random() * 3;
+}
+
+const COLOR_WAVE_SECONDS = 1;
+
+const HOUR24_WAVE_SECONDS = .5;
+
+const CLOCK_FADE_SECONDS = .25;
+
+const WAVE_BLOCK_COLS = 4, WAVE_BLOCK_ROWS = 3, WAVE_JITTER = .08;
+
+function waveThresholds() {
+  const {cols: cols, rows: rows} = S;
+  const blocksAcross = Math.ceil(cols / WAVE_BLOCK_COLS), blocksDown = Math.ceil(rows / WAVE_BLOCK_ROWS);
+  const nudge = Array.from({
+    length: blocksAcross * blocksDown
+  }, () => (Math.random() * 2 - 1) * WAVE_JITTER);
+  const at = new Float32Array(cols * rows);
+  for (let r = 0; r < rows; r++) for (let x = 0; x < cols; x++) {
+    const br = Math.floor(r / WAVE_BLOCK_ROWS), bx = Math.floor(x / WAVE_BLOCK_COLS);
+    const diagonal = ((br + .5) / blocksDown + (bx + .5) / blocksAcross) / 2;
+    at[r * cols + x] = diagonal + nudge[br * blocksAcross + bx];
+  }
+  return at;
+}
+
+function slotFor(i) {
+  if (!S.wave) return S.slot;
+  return S.wave.front >= S.wave.at[i] ? S.slot : 1 - S.slot;
+}
+
+function step(dt) {
+  const {cols: cols, rows: rows} = S;
+  if (S.wave) {
+    S.wave.front = -WAVE_JITTER + (1 + 2 * WAVE_JITTER) * (performance.now() - S.wave.start) / 1e3 / COLOR_WAVE_SECONDS;
+    for (let i = 0; i < S.gen.length; i++) if (S.gen[i] !== S.slot) S.gen[i] = slotFor(i);
+    if (S.wave.front >= 1 + WAVE_JITTER) S.wave = null;
+  }
+  if (S.hourWave) {
+    const front = -WAVE_JITTER + (1 + 2 * WAVE_JITTER) * (performance.now() - S.hourWave.start) / 1e3 / HOUR24_WAVE_SECONDS;
+    for (let i = 0; i < S.lit.length; i++) if (front >= S.hourWave.at[i]) S.lit[i] = S.target[i];
+    if (front >= 1 + WAVE_JITTER) S.hourWave = null;
+  }
+  if (S.clockFade !== S.clockFadeTo) {
+    const by = dt / CLOCK_FADE_SECONDS;
+    S.clockFade = S.clockFadeTo > S.clockFade ? Math.min(1, S.clockFade + by) : Math.max(0, S.clockFade - by);
+    if (S.clockFade === 0 && S.clockFadeTo === 0) {
+      S.target.fill(0);
+      S.lit.fill(0);
+    }
+  }
+  setRed(redness(new Date));
+  const [hh, mm] = timeParts();
+  const t = hh + ":" + mm;
+  if (t !== S.time) {
+    S.time = t;
+    beginChange(hh, mm);
+  }
+  const ghostDecay = Math.pow(.05, dt / (rainStyle().ghostFade ?? GHOST_FADE));
+  for (let i = 0; i < S.bright.length; i++) {
+    S.bright[i] *= Math.exp(-S.fade[i] * dt);
+    S.ghostA[i] *= ghostDecay;
+  }
+  if (CONFIG.color === "bug") stepBug(dt);
+  const style = rainStyle();
+  S.redraw = true;
+  S.heads = new Set;
+  if (S.filmCols) stepFilmColumns(dt, style);
+  if (style.tipFade) {
+    const k = Math.exp(-style.tipFade * dt);
+    for (let i = 0; i < S.tip.length; i++) S.tip[i] *= k;
+  }
+  if (!style.pairs) {
+    const want = Math.round(S.cols * streamDensity());
+    while (S.streams.length < want) {
+      const s = newStream(S.rows);
+      s.col = Math.floor(Math.random() * cols);
+      s.y = -Math.random() * rows * .5;
+      s.at = Math.floor(s.y);
+      S.streams.push(s);
+    }
+    if (S.streams.length > want) S.streams = S.streams.filter((s, k) => k < want || s.y < rows + 1 && s.y >= 0);
+  }
+  for (const s of S.streams) {
+    s.y += s.v * dt;
+    const cur = Math.floor(s.y);
+    for (let r = Math.max(0, s.at); r <= Math.min(rows - 1, cur); r++) {
+      const i = r * cols + s.col;
+      light(i, s.v, s.trail);
+      setChar(i, randChar());
+      S.lit[i] = S.target[i];
+    }
+    s.at = cur;
+    if (s.at >= 0 && s.at < rows) S.heads.add(s.at * cols + s.col);
+    if (s.y > rows + Math.random() * 10) {
+      s.trail = streamTrail();
+      s.y = -Math.random() * rows * .5;
+      s.at = Math.floor(s.y);
+      s.v = streamSpeed();
+      s.col = Math.floor(Math.random() * cols);
+    }
+  }
+  for (const d of S.changers) {
+    if (d.delay > 0) {
+      d.delay -= dt;
+      continue;
+    }
+    d.y += d.v * dt;
+    const cur = Math.floor(d.y);
+    for (let r = Math.max(0, d.at); r <= Math.min(rows - 1, cur); r++) {
+      const i = r * cols + d.x;
+      if (!style.pairs || S.target[i] || S.lit[i]) {
+        light(i, d.v);
+        setChar(i, randChar());
+      }
+      S.lit[i] = S.target[i];
+    }
+    d.at = cur;
+    if (d.at >= 0 && d.at < rows) S.heads.add(d.at * cols + d.x);
+  }
+  S.changers = S.changers.filter(d => d.delay > 0 || d.y < rows + 2);
+  if (!style.burstEvery) {
+    for (let k = 0; k < 10; k++) {
+      const i = Math.floor(Math.random() * S.ch.length);
+      if (!S.lit[i]) setChar(i, randChar());
+    }
+  } else {
+    S.burstT += dt;
+    const burst = style.burstEvery && S.burstT >= (S.burstGap ??= style.burstEvery);
+    if (burst) {
+      S.burstT -= S.burstGap;
+      S.burstGap = style.burstEvery * between([ .85, 1.15 ]);
+    }
+    const settle = Math.exp(-dt / style.burstSettle);
+    for (let i = 0; i < S.ch.length; i++) {
+      const inBurst = burst && Math.random() < style.burstShare;
+      if (S.bright[i] > .05 && !S.lit[i]) {
+        if (inBurst) {
+          S.pulse[i] = 1;
+          S.pulseHold[i] = style.burstHold;
+          if (Math.random() < style.burstSwap) {
+            setChar(i, randChar());
+            rollSplotch(i);
+          }
+        }
+      }
+      if (S.pulse[i] > 0) {
+        if (S.pulseHold[i] > 0) S.pulseHold[i] -= dt; else S.pulse[i] = S.pulse[i] < .02 ? 0 : S.pulse[i] * settle;
+      }
+    }
+  }
+}
+
+const tinted = (hsl, style) => style.crt && style.crt.phosphorTint ? [ hsl[0] + 30 * style.crt.phosphorTint, hsl[1], hsl[2] ] : hsl;
+
+function buildSprites() {
+  const {cs: cs, rh: rh, dpr: dpr} = S;
+  const box = rainStyle().spriteBox || [ 1.6, 1.6 ];
+  const sw = Math.ceil(cs * box[0] * dpr), sh = Math.ceil(rh * box[1] * dpr);
+  const style = rainStyle();
+  const chars = [ ...new Set(style.pool) ];
+  const colours = CONFIG.color === "custom" ? customColours(CONFIG.customColor) : {
+    rain: colorAt(tinted(style.green || GREEN_RAIN, style), RED_RAIN, S.red),
+    head: colorAt(CONFIG.rainStyle === "classic" ? GREEN_HEAD : tinted(FILM_GREEN_HEAD, style), RED_HEAD, S.red)
+  };
+  if (style.headTint != null) colours.head = towardWhite(colours.rain, style.headTint);
+  if (CONFIG.color === "bug") {
+    colours.bugRain = colorAt(RED_RAIN, RED_RAIN, 0);
+    colours.bugHead = colorAt(RED_HEAD, RED_HEAD, 0);
+  }
+  if (style.crt) {
+    colours.fringeR = "#FF2A2A";
+    colours.fringeB = "#2A5CFF";
+  }
+  const perRow = 16;
+  const sheet = document.createElement("canvas");
+  sheet.width = perRow * sw;
+  sheet.height = Math.ceil(chars.length * Object.keys(colours).length / perRow) * sh;
+  const c = sheet.getContext("2d");
+  c.font = `${Math.round(cs * style.size * dpr)}px ${style.font}`;
+  c.textAlign = "center";
+  c.textBaseline = "middle";
+  const where = {};
+  let k = 0;
+  for (const [role, colour] of Object.entries(colours)) {
+    where[role] = {};
+    for (const ch of chars) {
+      const sx = k % perRow * sw, sy = Math.floor(k / perRow) * sh;
+      c.save();
+      c.translate(sx + sw / 2, sy + sh / 2);
+      if (style.mirrorKana && isKana(ch)) c.scale(-.62, 1); else if (style.glyphScaleX) c.scale(style.glyphScaleX, 1);
+      c.fillStyle = colour;
+      c.fillText(ch, 0, 0);
+      c.restore();
+      where[role][ch] = [ sx, sy ];
+      k++;
+    }
+  }
+  if (S.stripes) {
+    const {period: period, cut: cut} = S.stripes;
+    const cellLeft = sw / 2 - cs * dpr / 2;
+    c.globalCompositeOperation = "destination-out";
+    c.fillStyle = `rgba(0,0,0,${cut.toFixed(3)})`;
+    for (let n = 0; n < k; n++) {
+      const sx = n % perRow * sw, sy = Math.floor(n / perRow) * sh;
+      for (let j = Math.floor(-cellLeft / period) - 1; cellLeft + j * period < sw; j++) {
+        const x0 = Math.max(0, cellLeft + (j + 2 / 3) * period), x1 = Math.min(sw, cellLeft + (j + 1) * period);
+        if (x1 > x0) c.fillRect(sx + x0, sy, x1 - x0, sh);
+      }
+    }
+    c.globalCompositeOperation = "source-over";
+  }
+  let soft = null;
+  if (style.crt) {
+    const small = document.createElement("canvas");
+    small.width = Math.ceil(sheet.width / 3);
+    small.height = Math.ceil(sheet.height / 3);
+    const sc = small.getContext("2d");
+    sc.imageSmoothingQuality = "high";
+    sc.drawImage(sheet, 0, 0, small.width, small.height);
+    soft = document.createElement("canvas");
+    soft.width = sheet.width;
+    soft.height = sheet.height;
+    const fc = soft.getContext("2d");
+    fc.imageSmoothingQuality = "high";
+    fc.drawImage(small, 0, 0, sheet.width, sheet.height);
+  }
+  S.sprites = {
+    sheet: sheet,
+    soft: soft,
+    where: where,
+    sw: sw,
+    sh: sh
+  };
+  S.slots[S.slot] = S.sprites;
+}
+
+function crtGeometry() {
+  const crt = rainStyle().crt;
+  S.crt = null;
+  if (!crt) {
+    paintGlass();
+    return;
+  }
+  const {cs: cs, rh: rh, cols: cols, rows: rows, w: w, h: h} = S, n = cols * rows;
+  const ox = (w - cols * cs) / 2, oy = (h - rows * rh) / 2, cx = w / 2, cy = h / 2;
+  const X = new Float32Array(n), Y = new Float32Array(n), dim = new Float32Array(n), edge = new Float32Array(n);
+  const fx = new Float32Array(n), fy = new Float32Array(n), scale = new Float32Array(n);
+  for (let r = 0; r < rows; r++) for (let x = 0; x < cols; x++) {
+    const i = r * cols + x;
+    const u = (ox + x * cs + cs / 2 - cx) / cx, v = (oy + r * rh + rh / 2 - cy) / cy;
+    const r2 = (u * u + v * v) / 2;
+    const zoom = 1 / (1 - crt.bow / 2);
+    const pull = (1 - crt.bow * r2) * zoom;
+    X[i] = cx + u * cx * pull;
+    Y[i] = cy + v * cy * pull;
+    const sq = 1 - 2 * crt.bow * r2;
+    scale[i] = sq < .995 ? sq : 1;
+    dim[i] = 1 - crt.vignette * r2 ** 1.25;
+    edge[i] = Math.min(1, Math.max(0, (Math.sqrt(r2) - .35) / .65)) ** 1.5;
+    const len = Math.hypot(u * cx, v * cy) || 1;
+    fx[i] = u * cx / len * crt.fringe * cs * edge[i];
+    fy[i] = v * cy / len * crt.fringe * cs * edge[i];
+  }
+  S.crt = {
+    X: X,
+    Y: Y,
+    dim: dim,
+    edge: edge,
+    fx: fx,
+    fy: fy,
+    scale: scale,
+    soft: crt.soft,
+    fringeAlpha: crt.fringeAlpha,
+    afterglow: crt.afterglow,
+    glass: crt.glass,
+    vignette: crt.vignette
+  };
+  paintGlass();
+}
+
+const glassLayer = document.getElementById("glass");
+
+const GLASS_SCALE = 4;
+
+function paintGlass() {
+  const crt = S.crt;
+  if (!crt || !crt.glass) {
+    glassLayer.width = glassLayer.height = 0;
+    glassLayer.style.display = "none";
+    return;
+  }
+  const {w: w, h: h, dpr: dpr} = S, k = 1 / GLASS_SCALE;
+  glassLayer.style.display = "";
+  glassLayer.width = Math.ceil(w * dpr * k);
+  glassLayer.height = Math.ceil(h * dpr * k);
+  const g = glassLayer.getContext("2d");
+  const cx = glassLayer.width / 2, cy = glassLayer.height / 2, far = Math.hypot(cx, cy);
+  const fill = g.createRadialGradient(cx, cy, 0, cx, cy, far);
+  fill.addColorStop(0, `rgba(70,120,90,${crt.glass})`);
+  fill.addColorStop(1, `rgba(70,120,90,${crt.glass * (1 - crt.vignette)})`);
+  g.fillStyle = fill;
+  g.fillRect(0, 0, glassLayer.width, glassLayer.height);
+}
+
+const clockLayer = document.getElementById("clock");
+
+const cctx = clockLayer.getContext("2d");
+
+function sizeLayers() {
+  const {cols: cols, rows: rows, rh: rh, dpr: dpr, h: h} = S, oy = (h - rows * rh) / 2;
+  let r0 = rows, r1 = -1;
+  for (let i = 0; i < S.lit.length; i++) if (S.lit[i] || S.target[i]) {
+    const r = i / cols | 0;
+    if (r < r0) r0 = r;
+    if (r > r1) r1 = r;
+  }
+  let top = 0, height = 1;
+  if (r1 >= 0) {
+    r0 = Math.max(0, r0 - 2);
+    r1 = Math.min(rows - 1, r1 + 2);
+    top = Math.max(0, Math.floor((oy + r0 * rh) * dpr));
+    height = Math.min(screen.height - top, Math.ceil((oy + (r1 + 1) * rh) * dpr) - top);
+  }
+  if (!S.band || S.band.top !== top || S.band.height !== height || clockLayer.width !== screen.width) {
+    S.band = {
+      top: top,
+      height: height
+    };
+    clockLayer.width = screen.width;
+    clockLayer.height = height;
+    clockLayer.style.top = `${top / dpr}px`;
+    clockLayer.style.height = `${height / dpr}px`;
+  }
+}
+
+function draw() {
+  const clarity = Math.min(1, Math.max(0, CONFIG.clarity == null || CONFIG.clarity === "" ? 1 : +CONFIG.clarity));
+  const clockA = TIME_ALPHA + (1 - TIME_ALPHA) * clarity;
+  const rainA = (THUMB && CONFIG.showClock ? RAIN_ALPHA * .45 : RAIN_ALPHA) * (1 - (1 - clearRainShare()) * clarity);
+  const cutoff = .05 * rainA / RAIN_ALPHA;
+  const tipRatio = rainStyle().tipRatio || 0;
+  const headAlpha = rainStyle().headAlpha || 0;
+  const noGhosts = !!rainStyle().burstEvery || (rainStyle().ghostFade ?? GHOST_FADE) <= 0;
+  const burstBoost = rainStyle().burstBoost || 0;
+  const {cs: cs, rh: rh, cols: cols, rows: rows, w: w, h: h, dpr: dpr} = S;
+  lctx.setTransform(1, 0, 0, 1, 0, 0);
+  lctx.clearRect(0, 0, screen.width, screen.height);
+  sizeLayers();
+  const bandTop = S.band.top;
+  const ox = (w - cols * cs) / 2, oy = (h - rows * rh) / 2;
+  let cellSet = null;
+  const glyph = (ch, role, px, py, alpha, onClock = false, useSoft = false, scale = 1) => {
+    const {where: where, sw: sw, sh: sh} = cellSet;
+    const sheet = useSoft ? cellSet.soft : cellSet.sheet;
+    const at = where[role] && where[role][ch];
+    if (!at) return;
+    const target = onClock ? cctx : lctx;
+    target.globalAlpha = alpha;
+    if (scale !== 1) {
+      const dw = sw * scale, dh = sh * scale;
+      target.drawImage(sheet, at[0], at[1], sw, sh, px * dpr - dw / 2, py * dpr - dh / 2 - (onClock ? bandTop : 0), dw, dh);
+      return;
+    }
+    target.drawImage(sheet, at[0], at[1], sw, sh, Math.round(px * dpr - sw / 2), Math.round(py * dpr - sh / 2) - (onClock ? bandTop : 0), sw, sh);
+  };
+  cctx.clearRect(0, 0, clockLayer.width, clockLayer.height);
+  let clockDrawn = false;
+  for (let r = 0; r < rows; r++) for (let x = 0; x < cols; x++) {
+    const i = r * cols + x;
+    const bugB = S.bugBright[i];
+    const redShare = bugB > 0 ? Math.min(1, Math.max(0, (bugB - .15) / .4)) : 0;
+    const tip = tipRatio ? S.tip[i] : 0;
+    const isHead = !tipRatio && S.heads.has(i);
+    const b = Math.max(isHead ? S.bright[i] : S.bright[i] * S.splotch[i], bugB * (1 - redShare));
+    const redA = bugB * .95 * redShare;
+    const timeA = clockA * S.clockFade;
+    const trailA = isHead && headAlpha ? b * Math.min(1, RAIN_ALPHA + headAlpha) * rainA / RAIN_ALPHA : b * rainA * (burstBoost && S.pulse[i] ? 1 + burstBoost * S.pulse[i] : 1);
+    const crt = S.crt;
+    const dim = crt ? crt.dim[i] : 1;
+    const a = (S.lit[i] ? Math.max(timeA, trailA) : trailA) * dim;
+    if (a < cutoff && redA < cutoff) continue;
+    const px = crt ? crt.X[i] : ox + x * cs + cs / 2, py = crt ? crt.Y[i] : oy + r * rh + rh / 2;
+    cellSet = S.slots[S.gen[i]] || S.slots[S.slot];
+    if (a >= cutoff) {
+      const sc = crt ? crt.scale[i] : 1;
+      if (!lowPower && !noGhosts && S.ghostA[i] > .03) glyph(S.ghost[i], "rain", px, py, a * S.ghostA[i] * (rainStyle().ghostStrength ?? .6), false, false, sc);
+      const onClock = S.lit[i] && timeA >= trailA;
+      if (onClock) clockDrawn = true;
+      const e = crt && !onClock && cellSet.soft ? crt.edge[i] * crt.soft : 0;
+      glyph(S.ch[i], isHead ? "head" : "rain", px, py, a * (1 - redShare) * (1 - e), onClock, false, sc);
+      if (e > .02) glyph(S.ch[i], isHead ? "head" : "rain", px, py, a * (1 - redShare) * e * 1.3, false, true, sc);
+      if (tip > .05) glyph(S.ch[i], "head", px, py, onClock ? tip : Math.min(1, rainA * tipRatio) * tip * dim, onClock, e > .3, sc);
+      if (crt && !onClock && crt.edge[i] > .05) {
+        const fa = a * crt.fringeAlpha * crt.edge[i];
+        glyph(S.ch[i], "fringeR", px + crt.fx[i], py + crt.fy[i], fa, false, true, sc);
+        glyph(S.ch[i], "fringeB", px - crt.fx[i], py - crt.fy[i], fa, false, true, sc);
+      }
+    }
+    if (redA >= cutoff) {
+      glyph(S.ch[i], i === S.bug.head ? "bugHead" : "bugRain", px, py, Math.max(redA, S.lit[i] ? clockA * redShare * S.clockFade : 0));
+    }
+  }
+  lctx.globalAlpha = 1;
+  cctx.globalAlpha = 1;
+  for (const g of glowCtx) {
+    if (g.canvas.style.display === "none") continue;
+    g.clearRect(0, 0, g.canvas.width, g.canvas.height);
+    g.drawImage(screen, 0, 0, g.canvas.width, g.canvas.height);
+    if (!clockDrawn) continue;
+    g.globalAlpha = CLOCK_GLOW;
+    const k = g.canvas.height / screen.height;
+    g.drawImage(clockLayer, 0, S.band.top * k, g.canvas.width, S.band.height * k);
+    g.globalAlpha = 1;
+  }
+  if (THUMB) bakeGlow();
+}
+
+function bakeGlow() {
+  const copy = document.createElement("canvas");
+  copy.width = screen.width;
+  copy.height = screen.height;
+  copy.getContext("2d").drawImage(screen, 0, 0);
+  lctx.setTransform(1, 0, 0, 1, 0, 0);
+  lctx.globalCompositeOperation = "source-over";
+  lctx.fillStyle = "#000";
+  lctx.fillRect(0, 0, screen.width, screen.height);
+  lctx.globalCompositeOperation = "lighter";
+  for (const [radius, strength] of GLOWS) {
+    lctx.filter = `blur(${(S.cs * radius * (window.devicePixelRatio || 1)).toFixed(1)}px) brightness(${strength})`;
+    lctx.drawImage(copy, 0, 0);
+  }
+  lctx.filter = "none";
+  lctx.drawImage(copy, 0, 0);
+  lctx.globalCompositeOperation = "source-over";
+  glowCanvases.forEach(g => g.style.display = "none");
+}
+
+const FRAME_MS = 1e3 / 24;
+
+let lowPower = false;
+
+let frameMs = FRAME_MS;
+
+function setEnergySaver(on) {
+  const regrid = on !== lowPower && (+CONFIG.density || 0) > 0 && typeof S !== "undefined" && S.lit;
+  lowPower = on;
+  if (regrid) {
+    init(true);
+    if (!CONFIG.writeIn && (CONFIG.preview || CONFIG.sheet)) S.lit = S.target.slice();
+  }
+  frameMs = on ? 1e3 / 12 : FRAME_MS;
+  showGlow();
+}
+
+function showGlow() {
+  glowCanvases.forEach((g, k) => {
+    const hidden = (lowPower || memorySafe) && k !== 1;
+    g.style.display = hidden ? "none" : "";
+    if (hidden && memorySafe) g.width = g.height = 0;
+  });
+  grain.style.display = lowPower || !(rainStyle().grain ?? .06) ? "none" : "";
+}
+
+const BIG_SCREEN_PIXELS = 165e5;
+
+let memorySafe = false;
+
+function enterMemorySafe(reason) {
+  if (memorySafe) return;
+  memorySafe = true;
+  showGlow();
+  try {
+    window.webkit.messageHandlers.alive.postMessage("memory-safe: " + reason);
+  } catch (e) {}
+}
+
+const fpsWatch = {
+  start: 0,
+  frames: 0,
+  since: 0
+};
+
+function watchFrameRate(now) {
+  if (!fpsWatch.since) fpsWatch.since = now;
+  if (!fpsWatch.start) {
+    fpsWatch.start = now;
+    fpsWatch.frames = 0;
+  }
+  fpsWatch.frames++;
+  if (now - fpsWatch.start < 3e3) return;
+  const fps = fpsWatch.frames * 1e3 / (now - fpsWatch.start);
+  fpsWatch.start = now;
+  fpsWatch.frames = 0;
+  if (!lowPower && !memorySafe && now - fpsWatch.since > 5e3 && fps < 10) enterMemorySafe(`${fps.toFixed(1)} frames a second`);
+}
+
+let last = performance.now();
+
+let due = last;
+
+const GRAIN_TILE = 256;
+
+let grain = document.getElementById("grain");
+
+function makeGrain() {
+  const dpr = window.devicePixelRatio || 1;
+  const tile = document.createElement("canvas");
+  tile.width = tile.height = GRAIN_TILE;
+  const g = tile.getContext("2d");
+  const img = g.createImageData(GRAIN_TILE, GRAIN_TILE);
+  for (let k = 0; k < img.data.length; k += 4) {
+    const v = Math.random() * 255;
+    img.data[k] = img.data[k + 1] = img.data[k + 2] = v;
+    img.data[k + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  const scale = .5;
+  const cssW = innerWidth + 256, cssH = innerHeight + 256;
+  const c = document.createElement("canvas");
+  c.id = "grain";
+  c.width = Math.ceil(cssW * dpr * scale);
+  c.height = Math.ceil(cssH * dpr * scale);
+  const cg = c.getContext("2d");
+  cg.fillStyle = cg.createPattern(tile, "repeat");
+  cg.fillRect(0, 0, c.width, c.height);
+  Object.assign(c.style, {
+    left: "-128px",
+    top: "-128px",
+    width: `${cssW}px`,
+    height: `${cssH}px`,
+    mixBlendMode: "normal",
+    imageRendering: "pixelated"
+  });
+  if (grain.style.display) c.style.display = grain.style.display;
+  grain.replaceWith(c);
+  grain = c;
+}
+
+let grainTick = 0;
+
+function moveGrain() {
+  if (grainTick++ % 2) return;
+  const x = Math.floor(Math.random() * 128), y = Math.floor(Math.random() * 128);
+  grain.style.transform = `translate(${x}px, ${y}px)`;
+}
+
+let hidden = !!CONFIG.hidden;
+
+function setHidden(on) {
+  hidden = on;
+  if (!on && S.lit) draw();
+}
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (now < due - 4) return;
+  due = Math.max(due + frameMs, now - frameMs);
+  const dt = Math.min(.1, (now - last) / 1e3);
+  last = now;
+  if (!S.lit) return;
+  step(dt);
+  if (hidden) return;
+  if (S.redraw || THUMB) draw();
+  window.framesRun = (window.framesRun || 0) + 1;
+  watchFrameRate(now);
+  if (!lowPower) moveGrain();
+  if (now - lastBeat > 1e3) {
+    lastBeat = now;
+    try {
+      window.webkit.messageHandlers.alive.postMessage(window.framesRun || 0);
+    } catch (e) {}
+  }
+}
+
+let lastBeat = 0;
+
+window.addEventListener("resize", start);
+
+Promise.all([ document.fonts.load(`700 40px "${clockFontName()}"`, "O0123456789:"), ...[ "Tektur", "Michroma", "Orbitron", "DSEG7 Modern" ].map(name => document.fonts.load(`700 40px "${name}"`, "0123456789")), document.fonts.load(`40px "Matrix Code"`, RAIN_STYLES.film.pool.join("")), document.fonts.load(`400 40px "JetBrains Mono"`, "ZKXAEHMNRTY"), document.fonts.load(`40px "Modern Digits"`, "0123456789"), document.fonts.load(`400 40px "M PLUS 1 Code"`, RAIN_STYLES.classic.pool.filter(isKana).join("")) ]).catch(() => {}).then(() => {
+  start();
+  requestAnimationFrame(frame);
+});
+
+function towardWhite(css, share) {
+  const probe = document.createElement("canvas").getContext("2d");
+  probe.fillStyle = css;
+  const hex = probe.fillStyle;
+  const n = parseInt(hex.slice(1), 16);
+  const rgb = [ n >> 16 & 255, n >> 8 & 255, n & 255 ].map(v => Math.round(v + (255 - v) * share));
+  return `rgb(${rgb.join(",")})`;
+}
+
+function customColours(hex) {
+  const n = parseInt(String(hex || "#3FA9FF").replace("#", ""), 16);
+  const rgb = [ n >> 16 & 255, n >> 8 & 255, n & 255 ];
+  const tint = rgb.map(v => Math.round(v + (255 - v) * .6));
+  return {
+    rain: `rgb(${rgb.join(",")})`,
+    head: `rgb(${tint.join(",")})`
+  };
+}
+
+let regridTimer = null, settleTimer = null, lastRegrid = 0, regridGap = 100;
+
+function regridSoon() {
+  const regrid = quick => {
+    const t = performance.now();
+    init.warmup = quick ? 8 : 0;
+    init(true);
+    init.warmup = 0;
+    if (!CONFIG.writeIn) S.lit = S.target.slice();
+    S.changers = [];
+    lastRegrid = performance.now();
+    if (quick) regridGap = Math.max(100, 2 * (lastRegrid - t));
+  };
+  clearTimeout(regridTimer);
+  clearTimeout(settleTimer);
+  const wait = regridGap - (performance.now() - lastRegrid);
+  if (wait <= 0) regrid(true); else regridTimer = setTimeout(() => regrid(true), wait);
+  settleTimer = setTimeout(() => regrid(false), Math.max(wait, 0) + 350);
+}
+
+function applyOptions(options) {
+  const before = {
+    color: CONFIG.color,
+    custom: CONFIG.customColor,
+    shown: CONFIG.showClock !== false,
+    hour24: !!CONFIG.hour24,
+    rain: rainStyle(),
+    size: +CONFIG.size,
+    density: +CONFIG.density || 0
+  };
+  Object.assign(CONFIG, options);
+  if (rainStyle() !== before.rain) {
+    init(true);
+    if (!CONFIG.writeIn) S.lit = S.target.slice();
+    S.changers = [];
+  } else if ((+CONFIG.density || 0) !== before.density) {
+    regridSoon();
+  }
+  const shown = CONFIG.showClock !== false;
+  const newColor = CONFIG.color !== before.color || CONFIG.customColor !== before.custom;
+  const sameDrag = newColor && S.wave && CONFIG.color === "custom" && before.color === "custom";
+  if (newColor && !sameDrag) {
+    S.slot = 1 - S.slot;
+    S.wave = {
+      start: performance.now(),
+      front: -WAVE_JITTER,
+      at: waveThresholds()
+    };
+  }
+  const [hh, mm] = timeParts();
+  S.time = hh + ":" + mm;
+  if (before.shown && !shown) {
+    S.clockFadeTo = 0;
+  } else {
+    if (!before.shown && shown) {
+      S.clockFade = 0;
+      S.clockFadeTo = 1;
+    }
+    S.target = cellMask(hh, mm);
+    if (!!CONFIG.hour24 !== before.hour24 && shown) {
+      S.hourWave = {
+        start: performance.now(),
+        at: waveThresholds()
+      };
+    } else {
+      S.hourWave = null;
+      if (!CONFIG.writeIn || +CONFIG.size !== before.size) S.lit = S.target.slice();
+    }
+  }
+  S.changers = [];
+  setRed(redness(new Date));
+  buildSprites();
+  setEnergySaver(!!CONFIG.energySaver);
+}
+
+function start() {
+  if (!innerWidth || !innerHeight) return;
+  makeGrain();
+  lowPower = !!CONFIG.energySaver;
+  init();
+  if (screen.width * screen.height > BIG_SCREEN_PIXELS) enterMemorySafe("screen bigger than 5K");
+  setEnergySaver(!!CONFIG.energySaver);
+  if (THUMB) for (let k = 0; k < 96; k++) step(1 / 24);
+  if (THUMB) document.body.style.transition = "none";
+  requestAnimationFrame(() => document.body.classList.add("shown"));
+}
+</script>
+</body>
+</html>
